@@ -2,3 +2,8 @@ node_modules/
 dist/
 .env
 deploy.zip
+
+# DB tooling — local only for now (run db:migrate / db:seed from this machine)
+drizzle/
+drizzle.config.ts
+src/db/seed.ts
