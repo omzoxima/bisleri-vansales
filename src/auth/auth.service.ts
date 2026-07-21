@@ -26,13 +26,20 @@ export class AuthService {
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) throw new UnauthorizedException('Invalid credentials');
 
-    // Device binding: first login enrols the device; later logins must match.
+    // Device binding.
+    //  STRICT mode (STRICT_DEVICE_BINDING=true): a bound account can only log
+    //  in from its enrolled device — for production rollout.
+    //  Default (demo/UAT): last-login-wins — logging in from a new device
+    //  simply re-binds the account to it, so the same demo user can move
+    //  between emulator and phone freely.
     if (user.deviceId && deviceId && user.deviceId !== deviceId) {
-      throw new UnauthorizedException(
-        'This account is bound to another device. Contact your supervisor.',
-      );
+      if (process.env.STRICT_DEVICE_BINDING === 'true') {
+        throw new UnauthorizedException(
+          'This account is bound to another device. Contact your supervisor.',
+        );
+      }
     }
-    if (!user.deviceId && deviceId) {
+    if (deviceId && user.deviceId !== deviceId) {
       await db
         .update(schema.users)
         .set({ deviceId })
