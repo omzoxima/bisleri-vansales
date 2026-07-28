@@ -10,7 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit push",
-    "db:seed": "ts-node --transpile-only src/db/seed.ts"
+    "db:seed": "ts-node --transpile-only src/db/seed.ts",
+    "db:studio": "drizzle-kit studio"
   },
   "engines": {
     "node": ">=20"

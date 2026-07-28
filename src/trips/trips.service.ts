@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { and, desc, eq } from 'drizzle-orm';
 import { getDb, schema as s } from '../db/client';
 import { DayStartResponse } from '../shared';
+import { ensureTodayGatePass } from '../domain/demoProvisioning';
 
 const BLOCK_SIZE = Number(process.env.INVOICE_BLOCK_SIZE ?? 70);
 
@@ -95,10 +96,7 @@ export class TripsService {
       return created;
     });
 
-    const [gatePass] = await db
-      .select()
-      .from(s.gatePasses)
-      .where(and(eq(s.gatePasses.userId, userId), eq(s.gatePasses.tripDate, today)));
+    const gatePass = await ensureTodayGatePass(userId, today, trip.id, user.erpUserCode);
 
     let gatePassPayload: unknown = null;
     if (gatePass) {

@@ -61,7 +61,8 @@ export interface OrderSummary {
 /**
  * Price a cart: discounts, scheme free lines, inclusive-tax split and the
  * empty-jar rule (customer must return as many jars as two-way units bought;
- * shortfall billed at ₹150/jar).
+ * shortfall billed at ₹150/jar; surplus returned is credited at the same
+ * rate, and the order total may go negative).
  */
 export function computeOrder(
   cart: CartLineInput[],
@@ -85,7 +86,11 @@ export function computeOrder(
     opts: { schemeFree?: boolean; discountPerPc?: number; jarsReceived?: number },
   ) => {
     const totalPcs = toTotalPcs(qtyCases, qtyPcs, item.pcsPerCase);
-    if (totalPcs <= 0) return;
+    const jarsReceived = opts.jarsReceived ?? 0;
+    // A two-way item can be a pure empty-jar return (nothing sold) — keep the line so
+    // the credit is recorded and reaches the server. `!opts.schemeFree` keeps a
+    // zero-qty scheme line out even if the free item happens to be a jar.
+    if (totalPcs <= 0 && !(item.isTwoWay && !opts.schemeFree && jarsReceived > 0)) return;
     const unitPrice = opts.schemeFree ? 0 : item.unitPrice;
     const discountValue = opts.schemeFree
       ? 0
@@ -96,7 +101,7 @@ export function computeOrder(
     if (opts.schemeFree) schemeTotal = round2(schemeTotal + item.unitPrice * totalPcs);
 
     if (item.isTwoWay && !opts.schemeFree) {
-      jarShortfallQty += Math.max(0, totalPcs - (opts.jarsReceived ?? 0));
+      jarShortfallQty += totalPcs - jarsReceived; // negative = surplus returned → credit
     }
 
     gross = round2(gross + unitPrice * totalPcs);
@@ -114,7 +119,7 @@ export function computeOrder(
       unitPrice,
       discountValue,
       schemeFree: opts.schemeFree ?? false,
-      emptyJarsReceived: opts.jarsReceived ?? 0,
+      emptyJarsReceived: jarsReceived,
       lineAmount: Math.max(0, grossLine),
       cgst: split.cgst,
       sgst: split.sgst,

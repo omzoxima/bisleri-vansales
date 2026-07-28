@@ -22,4 +22,10 @@ export class SyncController {
   notifications(@CurrentUser() user: JwtPayload) {
     return this.sync.pendingNotifications(user.sub);
   }
+
+  /** Van transfer inbox: requests awaiting this rep's acceptance, plus their own settled outbound transfers. */
+  @Get('transfers')
+  transfers(@CurrentUser() user: JwtPayload) {
+    return this.sync.pendingTransfers(user.sub);
+  }
 }

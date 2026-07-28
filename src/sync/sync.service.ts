@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import {
   CUSTOMER_TYPE_COR_ROT,
   PUSH_ENTITIES,
@@ -129,6 +129,8 @@ export class SyncService {
         return this.applySettlement(tx, userId, p);
       case 'customer_onboarding':
         return this.applyOnboarding(tx, userId, p);
+      case 'visit_plan':
+        return this.applyVisitPlan(tx, userId, p);
       default:
         throw new Error(`No handler for ${entry.entity}`);
     }
@@ -150,6 +152,25 @@ export class SyncService {
         .update(s.gatePasses)
         .set({ status: 'verified', verifiedAt: new Date(p.at), dayTripId: trip.id })
         .where(eq(s.gatePasses.id, gp.id));
+
+      if (Array.isArray(p.lines) && p.lines.length > 0) {
+        for (const l of p.lines) {
+          await tx
+            .update(s.gatePassLines)
+            .set({
+              qtyCases: l.qtyCases,
+              qtyPcs: l.qtyPcs,
+              qtyTotalPcs: l.qtyTotalPcs,
+              verified: true,
+            })
+            .where(
+              and(
+                eq(s.gatePassLines.gatePassId, gp.id),
+                eq(s.gatePassLines.itemId, l.itemId),
+              ),
+            );
+        }
+      }
 
       const lines = await tx
         .select()
@@ -396,28 +417,47 @@ export class SyncService {
     return order.id;
   }
 
-  private async moveStock(
-    tx: Tx,
-    dayTripId: string,
-    itemId: string,
-    batchId: string | null,
-    deltaPcs: number,
-    opts: { txnType: string; refId?: string; soldDelta?: number; focDelta?: number; transferInDelta?: number; transferOutDelta?: number; returnedDelta?: number },
-  ) {
+  /**
+   * Locates a van_stock row for (trip, item[, batch]), falling back to any
+   * batch row for the item — the device prices per item and doesn't track
+   * batch splits, while gate-pass loads are batch-keyed. Shared by moveStock
+   * and adjustReserved so a reserve and its later release always resolve to
+   * the same row.
+   */
+  private async findVanStock(tx: Tx, dayTripId: string, itemId: string, batchId: string | null) {
     const batchCond = batchId ? eq(s.vanStock.batchId, batchId) : isNull(s.vanStock.batchId);
     let [row] = await tx
       .select()
       .from(s.vanStock)
       .where(and(eq(s.vanStock.dayTripId, dayTripId), eq(s.vanStock.itemId, itemId), batchCond));
-
-    // Fall back to any batch row of the item — the device prices per item and
-    // doesn't track batch splits, while gate-pass loads are batch-keyed.
     if (!row) {
       [row] = await tx
         .select()
         .from(s.vanStock)
         .where(and(eq(s.vanStock.dayTripId, dayTripId), eq(s.vanStock.itemId, itemId)));
     }
+    return row;
+  }
+
+  private async moveStock(
+    tx: Tx,
+    dayTripId: string,
+    itemId: string,
+    batchId: string | null,
+    deltaPcs: number,
+    opts: {
+      txnType: string;
+      refId?: string;
+      refTable?: string;
+      soldDelta?: number;
+      focDelta?: number;
+      transferInDelta?: number;
+      transferOutDelta?: number;
+      returnedDelta?: number;
+      reservedDelta?: number;
+    },
+  ) {
+    let row = await this.findVanStock(tx, dayTripId, itemId, batchId);
     if (!row) {
       if (deltaPcs < 0) throw new Error('No van stock for item — cannot deduct');
       [row] = await tx
@@ -438,6 +478,7 @@ export class SyncService {
         transferredInPcs: row.transferredInPcs + (opts.transferInDelta ?? 0),
         transferredOutPcs: row.transferredOutPcs + (opts.transferOutDelta ?? 0),
         returnedPcs: row.returnedPcs + (opts.returnedDelta ?? 0),
+        reservedPcs: row.reservedPcs + (opts.reservedDelta ?? 0),
       })
       .where(eq(s.vanStock.id, row.id));
     await tx.insert(s.stockLedger).values({
@@ -446,9 +487,44 @@ export class SyncService {
       batchId: row.batchId,
       txnType: opts.txnType,
       qtyPcs: deltaPcs,
-      refTable: 'orders',
+      refTable: opts.refTable ?? 'orders',
       refId: opts.refId,
     });
+  }
+
+  /**
+   * Holds or releases van stock for a pending outbound transfer — reserved
+   * stock is still physically in the van (counted in currentPcs) but not
+   * sellable or re-transferable. Writes no stock_ledger row: nothing has
+   * physically moved yet. Uses findVanStock (the same lookup moveStock uses)
+   * so a reserve and its later release always resolve to the same row.
+   *
+   * Enforcement boundary: the `deltaPcs > 0` check below is the only guard
+   * against over-reserving. moveStock's own currentPcs>=0 guard does NOT
+   * subtract reservedPcs, so in principle a sale could still eat into stock
+   * held for a pending transfer. That's safe today only because the device
+   * is the sole gate (repos.stockFor nets out reservedPcs before allowing an
+   * order or a new transfer) and the outbox drains FIFO per rep. If a second
+   * write path to van_stock is ever added, moveStock's guard must subtract
+   * reservedPcs too.
+   */
+  private async adjustReserved(
+    tx: Tx,
+    dayTripId: string,
+    itemId: string,
+    batchId: string | null,
+    deltaPcs: number,
+  ) {
+    const row = await this.findVanStock(tx, dayTripId, itemId, batchId);
+    if (!row) throw new Error(`No van stock for item ${itemId} to reserve`);
+    if (deltaPcs > 0 && row.currentPcs - row.reservedPcs < deltaPcs) {
+      throw new Error(`Only ${row.currentPcs - row.reservedPcs} pcs available to transfer`);
+    }
+    const newReserved = row.reservedPcs + deltaPcs;
+    if (newReserved < 0) {
+      throw new Error(`Reserved stock would go negative for item ${itemId}`);
+    }
+    await tx.update(s.vanStock).set({ reservedPcs: newReserved }).where(eq(s.vanStock.id, row.id));
   }
 
   // ── payments ──────────────────────────────────────────────────────────────
@@ -538,17 +614,68 @@ export class SyncService {
 
   // ── van transfers ─────────────────────────────────────────────────────────
 
+  /**
+   * Finalizes a transfer: releases the sender's reserve and debits their
+   * stock (skipped for an office-originated transfer, which has no sender
+   * van leg — fromDayTripId is null), and credits the receiver's stock
+   * (skipped for a van-to-office transfer, which has no receiving van —
+   * receiverTrip is undefined, since an office has no van_stock). One helper
+   * covers van-to-van accept, van-to-office auto-confirm, and office-to-van
+   * accept — replay-safe via the `status === 'accepted'` guard.
+   */
+  private async settleTransfer(
+    tx: Tx,
+    transfer: typeof s.vanTransfers.$inferSelect,
+    receiverTrip?: typeof s.dayTrips.$inferSelect,
+  ): Promise<void> {
+    if (transfer.status === 'accepted') return;
+    const lines = await tx
+      .select()
+      .from(s.vanTransferLines)
+      .where(eq(s.vanTransferLines.transferId, transfer.id));
+    for (const line of lines) {
+      if (transfer.fromDayTripId) {
+        await this.adjustReserved(tx, transfer.fromDayTripId, line.itemId, line.batchId, -line.qtyTotalPcs);
+        await this.moveStock(tx, transfer.fromDayTripId, line.itemId, line.batchId, -line.qtyTotalPcs, {
+          txnType: 'transfer_out',
+          refId: transfer.id,
+          refTable: 'van_transfers',
+          transferOutDelta: line.qtyTotalPcs,
+        });
+      }
+      if (receiverTrip) {
+        await this.moveStock(tx, receiverTrip.id, line.itemId, line.batchId, line.qtyTotalPcs, {
+          txnType: 'transfer_in',
+          refId: transfer.id,
+          refTable: 'van_transfers',
+          transferInDelta: line.qtyTotalPcs,
+        });
+      }
+    }
+    await tx
+      .update(s.vanTransfers)
+      .set({
+        status: 'accepted',
+        acceptedAt: new Date(),
+        ...(receiverTrip ? { toVanId: receiverTrip.vanId } : {}),
+      })
+      .where(eq(s.vanTransfers.id, transfer.id));
+  }
+
   private async applyVanTransfer(tx: Tx, userId: string, p: any): Promise<string> {
     const trip = await this.trip(tx, userId);
 
     if (p.direction === 'out') {
+      const isWarehouse = p.counterpartyType === 'warehouse';
       const [transfer] = await tx
         .insert(s.vanTransfers)
         .values({
           localUuid: p.localUuid,
           fromUserId: userId,
-          toUserId: p.counterpartyUserId,
+          toUserId: isWarehouse ? null : p.counterpartyUserId,
+          toWarehouseId: isWarehouse ? p.counterpartyWarehouseId : null,
           fromVanId: trip.vanId,
+          fromDayTripId: trip.id,
           status: 'pending',
         })
         .onConflictDoNothing({ target: s.vanTransfers.localUuid })
@@ -572,21 +699,27 @@ export class SyncService {
           qtyPcs: line.qtyPcs,
           qtyTotalPcs: total,
         });
-        await this.moveStock(tx, trip.id, line.itemId, line.batchId ?? null, -total, {
-          txnType: 'transfer_out',
-          refId: transfer.id,
-          transferOutDelta: total,
+        // Hold the stock — still physically in the van, but not sellable or
+        // re-transferable until the counterparty accepts (or, for an office
+        // destination, until the auto-confirm below settles it in this txn).
+        await this.adjustReserved(tx, trip.id, line.itemId, line.batchId ?? null, total);
+      }
+      if (isWarehouse) {
+        // The office is the system of record for its own inventory — no
+        // human accept step, settle immediately.
+        await this.settleTransfer(tx, transfer);
+      } else {
+        await tx.insert(s.appNotifications).values({
+          userId: p.counterpartyUserId,
+          type: 'transfer_in',
+          payload: { transferId: transfer.id, fromUserId: userId },
         });
       }
-      await tx.insert(s.appNotifications).values({
-        userId: p.counterpartyUserId,
-        type: 'transfer_in',
-        payload: { transferId: transfer.id, fromUserId: userId },
-      });
       return transfer.id;
     }
 
-    // accept_in — stock increments ONLY on acceptance (blueprint rule)
+    // accept_in — stock moves ONLY on acceptance (blueprint rule). Covers
+    // both a van-to-van transfer and one raised by the office for this van.
     const [transfer] = await tx
       .select()
       .from(s.vanTransfers)
@@ -599,21 +732,7 @@ export class SyncService {
     if (transfer.toUserId !== userId) throw new Error('Not your transfer');
     if (transfer.status === 'accepted') return transfer.id;
 
-    const lines = await tx
-      .select()
-      .from(s.vanTransferLines)
-      .where(eq(s.vanTransferLines.transferId, transfer.id));
-    for (const line of lines) {
-      await this.moveStock(tx, trip.id, line.itemId, line.batchId, line.qtyTotalPcs, {
-        txnType: 'transfer_in',
-        refId: transfer.id,
-        transferInDelta: line.qtyTotalPcs,
-      });
-    }
-    await tx
-      .update(s.vanTransfers)
-      .set({ status: 'accepted', acceptedAt: new Date(), toVanId: trip.vanId })
-      .where(eq(s.vanTransfers.id, transfer.id));
+    await this.settleTransfer(tx, transfer, trip);
     return transfer.id;
   }
 
@@ -818,6 +937,131 @@ export class SyncService {
     }
     await this.erp.enqueue(tx, 'push_customer', row.id, { onboardingId: row.id });
     return row.id;
+  }
+
+  // ── ad-hoc route stops ──────────────────────────────────────────────────────
+
+  /**
+   * A rider adding a customer to today's route from the "All customers" list.
+   * No dayTripId on visit_plans, so — unlike the handlers above — this does
+   * NOT call this.trip(): requiring an active day trip would permanently
+   * reject the push (no retry path for 'rejected' outbox rows) whenever a
+   * stop is added outside one. Uses the payload's planDate rather than the
+   * server's "today" so a stop added offline just before midnight still
+   * lands on the plan the rider actually meant.
+   */
+  private async applyVisitPlan(tx: Tx, userId: string, p: any): Promise<string> {
+    const [existing] = await tx
+      .select()
+      .from(s.visitPlans)
+      .where(
+        and(
+          eq(s.visitPlans.userId, userId),
+          eq(s.visitPlans.planDate, p.planDate),
+          eq(s.visitPlans.customerId, p.customerId),
+        ),
+      );
+    if (existing) return existing.id;
+
+    const [routeRow] = await tx
+      .select({ routeId: s.userRouteMap.routeId })
+      .from(s.userRouteMap)
+      .where(eq(s.userRouteMap.userId, userId));
+    let routeId: string | undefined = routeRow?.routeId;
+    if (!routeId) {
+      const [customer] = await tx
+        .select({ routeId: s.customers.routeId })
+        .from(s.customers)
+        .where(eq(s.customers.id, p.customerId));
+      routeId = customer?.routeId ?? undefined;
+    }
+    if (!routeId) throw new Error('Could not resolve a route for this stop');
+
+    const [plan] = await tx
+      .insert(s.visitPlans)
+      .values({
+        routeId,
+        userId,
+        planDate: p.planDate,
+        customerId: p.customerId,
+        sequence: p.sequence,
+        source: 'ad_hoc',
+      })
+      .returning();
+    return plan.id;
+  }
+
+  // ── transfer inbox ───────────────────────────────────────────────────────
+
+  /**
+   * Everything the Transfer In tab's "Fetch from backend" button needs:
+   * requests waiting for this rep to accept (from another van OR the office),
+   * plus this rep's own already-settled outbound transfers so the device can
+   * release its local reservation. Unlike /sync/notifications (which carries
+   * only {transferId, fromUserId} and never marks anything read), this
+   * returns full lines with item descriptions and sender identity, and is
+   * self-healing — an accepted transfer simply drops out of `incoming`.
+   */
+  async pendingTransfers(userId: string) {
+    const db = getDb();
+    const today = sql`${s.vanTransfers.initiatedAt}::date = current_date`;
+
+    const incomingHeaders = await db
+      .select({
+        id: s.vanTransfers.id,
+        status: s.vanTransfers.status,
+        initiatedAt: s.vanTransfers.initiatedAt,
+        fromUserId: s.vanTransfers.fromUserId,
+        fromWarehouseId: s.vanTransfers.fromWarehouseId,
+        fromUserName: s.users.name,
+        fromUserCode: s.users.erpUserCode,
+        fromWarehouseName: s.warehouses.name,
+        fromWarehouseCode: s.warehouses.code,
+      })
+      .from(s.vanTransfers)
+      .leftJoin(s.users, eq(s.vanTransfers.fromUserId, s.users.id))
+      .leftJoin(s.warehouses, eq(s.vanTransfers.fromWarehouseId, s.warehouses.id))
+      .where(and(eq(s.vanTransfers.toUserId, userId), eq(s.vanTransfers.status, 'pending'), today));
+
+    const incoming = await Promise.all(
+      incomingHeaders.map(async (h) => {
+        const lines = await db
+          .select({
+            itemId: s.vanTransferLines.itemId,
+            batchId: s.vanTransferLines.batchId,
+            qtyCases: s.vanTransferLines.qtyCases,
+            qtyPcs: s.vanTransferLines.qtyPcs,
+            qtyTotalPcs: s.vanTransferLines.qtyTotalPcs,
+            description: s.items.description,
+            pcsPerCase: s.items.pcsPerCase,
+          })
+          .from(s.vanTransferLines)
+          .innerJoin(s.items, eq(s.vanTransferLines.itemId, s.items.id))
+          .where(eq(s.vanTransferLines.transferId, h.id));
+
+        return {
+          id: h.id,
+          status: h.status,
+          initiatedAt: h.initiatedAt,
+          fromType: h.fromUserId ? ('user' as const) : ('warehouse' as const),
+          fromName: h.fromUserId ? h.fromUserName : h.fromWarehouseName,
+          fromCode: h.fromUserId ? h.fromUserCode : h.fromWarehouseCode,
+          lines,
+        };
+      }),
+    );
+
+    const outgoing = await db
+      .select({
+        id: s.vanTransfers.id,
+        localUuid: s.vanTransfers.localUuid,
+        status: s.vanTransfers.status,
+        acceptedAt: s.vanTransfers.acceptedAt,
+      })
+      .from(s.vanTransfers)
+      .where(and(eq(s.vanTransfers.fromUserId, userId), ne(s.vanTransfers.status, 'pending'), today));
+
+    return { incoming, outgoing };
   }
 
   // ── notifications ─────────────────────────────────────────────────────────

@@ -21,6 +21,7 @@ const uuid = z.string().uuid();
 const isoDate = z.string(); // ISO 8601 timestamp
 const money = z.number().finite();
 const qty = z.number().int().min(0);
+const signedQty = z.number().int(); // jar surplus makes the shortfall negative
 
 export const visitPushSchema = z.object({
   localUuid: uuid,
@@ -63,7 +64,7 @@ export const orderPushSchema = z.object({
   grossAmount: money,
   discountAmount: money.default(0),
   schemeAmount: money.default(0),
-  jarShortfallQty: qty.default(0),
+  jarShortfallQty: signedQty.default(0),
   jarShortfallAmount: money.default(0),
   taxableAmount: money,
   cgst: money.default(0),
@@ -89,7 +90,7 @@ export const paymentPushSchema = z.object({
     .nullish(),
   chequeDate: z.string().nullish(),
   couponCount: qty.nullish(),
-  amount: money.positive(),
+  amount: money, // negative = cash refunded to the customer (jar credit exceeds the sale)
   collectedAt: isoDate,
 });
 
@@ -106,18 +107,28 @@ export const jarCollectionPushSchema = z.object({
     .min(1),
 });
 
-export const transferPushSchema = z.object({
-  localUuid: uuid,
-  direction: z.enum(['out', 'accept_in']),
-  counterpartyUserId: uuid,
-  transferLocalUuid: uuid.nullish(), // for accept_in: the transfer being accepted (by localUuid)
-  transferId: uuid.nullish(), // for accept_in: server id from the push notification
-  lines: z
-    .array(
-      z.object({ itemId: uuid, batchId: uuid.nullish(), qtyCases: qty, qtyPcs: qty }),
-    )
-    .optional(),
-});
+export const transferPushSchema = z
+  .object({
+    localUuid: uuid,
+    direction: z.enum(['out', 'accept_in']),
+    // 'user' = van-to-van (existing flow); 'warehouse' = van-to-office / office-to-van.
+    counterpartyType: z.enum(['user', 'warehouse']).default('user'),
+    counterpartyUserId: uuid.nullish(),
+    counterpartyWarehouseId: uuid.nullish(),
+    transferLocalUuid: uuid.nullish(), // for accept_in: the transfer being accepted (by localUuid)
+    transferId: uuid.nullish(), // for accept_in: server id from the push notification
+    lines: z
+      .array(
+        z.object({ itemId: uuid, batchId: uuid.nullish(), qtyCases: qty, qtyPcs: qty }),
+      )
+      .optional(),
+  })
+  .refine(
+    (p) =>
+      p.direction !== 'out' ||
+      (p.counterpartyType === 'warehouse' ? !!p.counterpartyWarehouseId : !!p.counterpartyUserId),
+    { message: 'counterpartyUserId or counterpartyWarehouseId is required for an outbound transfer' },
+  );
 
 export const demandPushSchema = z.object({
   localUuid: uuid,
@@ -151,6 +162,13 @@ export const settlementPushSchema = z.object({
   focActualAmount: money,
 });
 
+export const visitPlanPushSchema = z.object({
+  localUuid: uuid,
+  customerId: uuid,
+  planDate: z.string(),
+  sequence: z.number().int().min(0),
+});
+
 export const customerOnboardPushSchema = z.object({
   localUuid: uuid,
   name: z.string().min(2),
@@ -175,6 +193,7 @@ export const PUSH_ENTITIES = {
   day_event: dayEventPushSchema,
   settlement: settlementPushSchema,
   customer_onboarding: customerOnboardPushSchema,
+  visit_plan: visitPlanPushSchema,
 } as const;
 export type PushEntity = keyof typeof PUSH_ENTITIES;
 

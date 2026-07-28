@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { and, eq, gt, inArray, SQL } from 'drizzle-orm';
 import { getDb, schema as s } from '../db/client';
 import { MasterPullResponse } from '../shared';
+import { ensureTodayVisitPlans } from '../domain/demoProvisioning';
 
 /**
  * Scoped delta pull of master data.
@@ -156,10 +157,7 @@ export class MastersService {
       .from(s.schemeOfferItems)
       .where(withDelta('scheme_offer_items', s.schemeOfferItems.updatedAt));
 
-    tables.visit_plans = await db
-      .select()
-      .from(s.visitPlans)
-      .where(and(eq(s.visitPlans.userId, userId), eq(s.visitPlans.planDate, today)));
+    tables.visit_plans = await ensureTodayVisitPlans(userId, today, routeIds);
 
     // Branch colleagues (no credentials) — needed for van-to-van transfers.
     tables.users = branchId

@@ -339,6 +339,10 @@ export const vanStock = pgTable(
     transferredInPcs: integer('transferred_in_pcs').default(0).notNull(),
     transferredOutPcs: integer('transferred_out_pcs').default(0).notNull(),
     currentPcs: integer('current_pcs').default(0).notNull(),
+    // Held for a pending outbound transfer (van-to-van or van-to-office); still
+    // physically in the van and counted in currentPcs, but not sellable or
+    // re-transferable until the counterparty accepts. See SyncService.adjustReserved.
+    reservedPcs: integer('reserved_pcs').default(0).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -366,6 +370,8 @@ export const visitPlans = pgTable('visit_plans', {
   planDate: date('plan_date').notNull(),
   customerId: uuid('customer_id').references(() => customers.id).notNull(),
   sequence: integer('sequence').default(0).notNull(),
+  // 'planned' = provisioned from the beat plan; 'ad_hoc' = added by the rider mid-route.
+  source: text('source').default('planned').notNull(),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -555,10 +561,19 @@ export const vanTransfers = pgTable(
   {
     id: id(),
     localUuid: uuid('local_uuid').notNull(),
-    fromUserId: uuid('from_user_id').references(() => users.id).notNull(),
-    toUserId: uuid('to_user_id').references(() => users.id).notNull(),
+    // Exactly one of {fromUserId, fromWarehouseId} and one of {toUserId, toWarehouseId}
+    // is set — a van-to-office or office-to-van leg has no counterparty user/van.
+    fromUserId: uuid('from_user_id').references(() => users.id),
+    toUserId: uuid('to_user_id').references(() => users.id),
+    fromWarehouseId: uuid('from_warehouse_id').references(() => warehouses.id),
+    toWarehouseId: uuid('to_warehouse_id').references(() => warehouses.id),
     fromVanId: uuid('from_van_id').references(() => vans.id),
     toVanId: uuid('to_van_id').references(() => vans.id),
+    // The sender's day trip at send time — needed to release the reserve and
+    // debit stock on acceptance, without re-deriving "today's trip for this user"
+    // (which would break if acceptance happens on a later day). Null for an
+    // office-originated (office-to-van) transfer, which has no sender van leg.
+    fromDayTripId: uuid('from_day_trip_id').references(() => dayTrips.id),
     status: text('status').notNull().default('pending'),
     initiatedAt: timestamp('initiated_at', { withTimezone: true }).defaultNow().notNull(),
     acceptedAt: timestamp('accepted_at', { withTimezone: true }),

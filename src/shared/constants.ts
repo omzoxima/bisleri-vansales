@@ -40,28 +40,35 @@ export const VISIT_OUTCOMES = ['order', 'no_order', 'jar_only', 'payment_only'] 
 /** Customer settled monthly — no in-app payment step. */
 export const CUSTOMER_TYPE_COR_ROT = 'COR-ROT';
 
-export const FOC_REASONS = [
+/** FOC given without a customer — stock leaves the van against the rep/depot. */
+export const FOC_SELF_REASONS = [
   'Breakage',
-  'Complaint',
-  'Complimentary',
   'Self-Consumption',
   'Deposit',
-  'Display',
-  'Display Incentive',
   'DTH Scheme',
-  'Expired Goods/Pet',
   'IDC Transfer',
-  'Job Work',
-  'POP Scheme',
-  'Replacement',
-  'Returnable',
   'Route Replacement',
-  'RTO',
-  'Sample',
   'Scheme',
   'Secondary Scheme',
   'Staff Sale',
 ] as const;
+
+/** FOC given to a specific customer. */
+export const FOC_CUSTOMER_REASONS = [
+  'Complaint',
+  'Complimentary',
+  'Display',
+  'Display Incentive',
+  'Expired Goods/Pet',
+  'Job Work',
+  'POP Scheme',
+  'Replacement',
+  'Returnable',
+  'RTO',
+  'Sample',
+] as const;
+
+export const FOC_REASONS = [...FOC_SELF_REASONS, ...FOC_CUSTOMER_REASONS] as const;
 export type FocReason = (typeof FOC_REASONS)[number];
 
 export const RETURN_REASONS = [
