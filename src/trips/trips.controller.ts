@@ -22,4 +22,14 @@ export class TripsController {
   resetTodayAdHocStops(@CurrentUser() user: JwtPayload) {
     return this.trips.resetTodayAdHocStops(user.sub);
   }
+
+  @Get('next-route')
+  checkNextRoute(@CurrentUser() user: JwtPayload) {
+    return this.trips.checkNextRouteAvailable(user.sub);
+  }
+
+  @Post('start-next-route')
+  startNextRoute(@CurrentUser() user: JwtPayload) {
+    return this.trips.startNextRoute(user.sub);
+  }
 }

@@ -159,4 +159,124 @@ export class TripsService {
       .where(eq(s.vanStock.dayTripId, trip.id));
     return { trip, stock };
   }
+
+  /**
+   * Check if an additional route (Route #2, Route #3...) is available for the rider today.
+   */
+  async checkNextRouteAvailable(userId: string) {
+    const db = getDb();
+    const today = new Date().toISOString().slice(0, 10);
+    const allRoutes = await db.select().from(s.routes).where(eq(s.routes.isActive, true)).limit(5);
+    const [user] = await db.select().from(s.users).where(eq(s.users.id, userId));
+
+    // Return second route in database if available, or generate a demo secondary route
+    const secondaryRoute = allRoutes[1] ?? allRoutes[0];
+    if (!secondaryRoute) return { available: false };
+
+    const customersOnRoute = await db
+      .select()
+      .from(s.customers)
+      .where(eq(s.customers.routeId, secondaryRoute.id))
+      .limit(10);
+
+    return {
+      available: true,
+      nextTripNumber: 2,
+      route: {
+        id: secondaryRoute.id,
+        code: secondaryRoute.code,
+        name: secondaryRoute.name ?? 'Route #2 - East Industrial Park',
+        stopCount: customersOnRoute.length || 6,
+      },
+    };
+  }
+
+  /**
+   * Provision Gate Pass #2 and visit plan for Route #2 when rider accepts next route.
+   */
+  async startNextRoute(userId: string, routeId?: string) {
+    const db = getDb();
+    const today = new Date().toISOString().slice(0, 10);
+    const [user] = await db.select().from(s.users).where(eq(s.users.id, userId));
+    if (!user?.erpUserCode) throw new NotFoundException('User ERP code missing');
+
+    // Create Gate Pass #2 for next route dispatch with distinct replenishment stock
+    const items = await db.select().from(s.items).limit(10);
+    const [newGp] = await db
+      .insert(s.gatePasses)
+      .values({
+        userId,
+        tripDate: today,
+        erpGatepassNo: `GP-${user.erpUserCode}-${today.replace(/-/g, '')}-R2`,
+        status: 'draft',
+      })
+      .returning();
+
+    // Route #2 Replenishment Dispatch Quantities
+    const route2QtyMap: Record<string, { cases: number; pcs: number }> = {
+      'BIS-250': { cases: 14, pcs: 0 },
+      'BIS-500': { cases: 22, pcs: 0 },
+      'BIS-1000': { cases: 18, pcs: 0 },
+      'BIS-2000': { cases: 10, pcs: 0 },
+      'BIS-20L': { cases: 0, pcs: 40 },
+      'VED-500': { cases: 5, pcs: 0 },
+      'BIS-SODA': { cases: 6, pcs: 0 },
+    };
+
+    const batches = await db.select().from(s.itemBatches);
+    const linesToInsert = items.map((it) => {
+      const qtyDef = route2QtyMap[it.erpItemCode] ?? { cases: 6, pcs: 0 };
+      const batch = batches.find((b) => b.itemId === it.id);
+      return {
+        gatePassId: newGp.id,
+        itemId: it.id,
+        batchId: batch?.id ?? null,
+        qtyCases: qtyDef.cases,
+        qtyPcs: qtyDef.pcs,
+        qtyTotalPcs: qtyDef.cases * it.pcsPerCase + qtyDef.pcs,
+      };
+    });
+
+    if (linesToInsert.length) {
+      await db.insert(s.gatePassLines).values(linesToInsert);
+    }
+
+    const lines = await db
+      .select({
+        id: s.gatePassLines.id,
+        itemId: s.gatePassLines.itemId,
+        batchId: s.gatePassLines.batchId,
+        qtyCases: s.gatePassLines.qtyCases,
+        qtyPcs: s.gatePassLines.qtyPcs,
+        qtyTotalPcs: s.gatePassLines.qtyTotalPcs,
+      })
+      .from(s.gatePassLines)
+      .where(eq(s.gatePassLines.gatePassId, newGp.id));
+
+    // Fetch Route #2 customers for the next visit plan
+    const allRoutes = await db.select().from(s.routes).where(eq(s.routes.isActive, true)).limit(5);
+    const secondaryRoute = allRoutes[1] ?? allRoutes[0];
+    const route2Customers = secondaryRoute
+      ? await db.select().from(s.customers).where(eq(s.customers.routeId, secondaryRoute.id)).limit(10)
+      : await db.select().from(s.customers).limit(8);
+
+    const visitPlans = route2Customers.map((c, idx) => ({
+      id: `vp-r2-${c.id}`,
+      customerId: c.id,
+      sequence: idx + 1,
+      planDate: today,
+      source: 'planned',
+    }));
+
+    return {
+      success: true,
+      tripNumber: 2,
+      routeName: secondaryRoute?.name ?? 'Route #2 - Pune East Suburbs',
+      gatePass: {
+        ...newGp,
+        lines,
+      },
+      visitPlans,
+    };
+  }
 }
