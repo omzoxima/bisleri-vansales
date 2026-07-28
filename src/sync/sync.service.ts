@@ -901,7 +901,7 @@ export class SyncService {
       }
     }
 
-    if (result.balanced && (trip.state === 'demand_created' || trip.state === 'day_started')) {
+    if (trip.state === 'demand_created' || trip.state === 'day_started') {
       await tx.update(s.dayTrips).set({ state: 'settled' }).where(eq(s.dayTrips.id, trip.id));
     }
     return settlement.id;
