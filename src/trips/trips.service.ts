@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, like } from 'drizzle-orm';
 import { getDb, schema as s } from '../db/client';
 import { DayStartResponse } from '../shared';
 import { ensureTodayGatePass } from '../domain/demoProvisioning';
@@ -130,7 +130,7 @@ export class TripsService {
     };
   }
 
-  /** Demo/testing "Reset Today's Data": drop rider-added ad-hoc stops from today's plan so they don't resurface on the next masters pull. */
+  /** Demo/testing "Reset Today's Data": drop rider-added ad-hoc stops and Route #2 gate passes for today. */
   async resetTodayAdHocStops(userId: string): Promise<void> {
     const db = getDb();
     const today = new Date().toISOString().slice(0, 10);
@@ -143,6 +143,22 @@ export class TripsService {
           eq(s.visitPlans.source, 'ad_hoc'),
         ),
       );
+
+    const r2Passes = await db
+      .select({ id: s.gatePasses.id })
+      .from(s.gatePasses)
+      .where(
+        and(
+          eq(s.gatePasses.userId, userId),
+          eq(s.gatePasses.tripDate, today),
+          like(s.gatePasses.erpGatepassNo, '%-R2'),
+        ),
+      );
+
+    for (const gp of r2Passes) {
+      await db.delete(s.gatePassLines).where(eq(s.gatePassLines.gatePassId, gp.id));
+      await db.delete(s.gatePasses).where(eq(s.gatePasses.id, gp.id));
+    }
   }
 
   async today(userId: string) {
