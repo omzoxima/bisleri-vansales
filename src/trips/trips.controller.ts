@@ -17,4 +17,9 @@ export class TripsController {
   today(@CurrentUser() user: JwtPayload) {
     return this.trips.today(user.sub);
   }
+
+  @Post('reset-today-ad-hoc')
+  resetTodayAdHocStops(@CurrentUser() user: JwtPayload) {
+    return this.trips.resetTodayAdHocStops(user.sub);
+  }
 }

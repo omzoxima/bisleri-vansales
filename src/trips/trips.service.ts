@@ -130,6 +130,21 @@ export class TripsService {
     };
   }
 
+  /** Demo/testing "Reset Today's Data": drop rider-added ad-hoc stops from today's plan so they don't resurface on the next masters pull. */
+  async resetTodayAdHocStops(userId: string): Promise<void> {
+    const db = getDb();
+    const today = new Date().toISOString().slice(0, 10);
+    await db
+      .delete(s.visitPlans)
+      .where(
+        and(
+          eq(s.visitPlans.userId, userId),
+          eq(s.visitPlans.planDate, today),
+          eq(s.visitPlans.source, 'ad_hoc'),
+        ),
+      );
+  }
+
   async today(userId: string) {
     const db = getDb();
     const today = new Date().toISOString().slice(0, 10);
