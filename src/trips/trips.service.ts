@@ -166,10 +166,23 @@ export class TripsService {
   async checkNextRouteAvailable(userId: string) {
     const db = getDb();
     const today = new Date().toISOString().slice(0, 10);
-    const allRoutes = await db.select().from(s.routes).where(eq(s.routes.isActive, true)).limit(5);
     const [user] = await db.select().from(s.users).where(eq(s.users.id, userId));
+    if (!user) return { available: false };
 
-    // Return second route in database if available, or generate a demo secondary route
+    // If Route #2 Gate Pass already generated today for this user, no more routes available
+    const [existingR2] = await db
+      .select()
+      .from(s.gatePasses)
+      .where(
+        and(
+          eq(s.gatePasses.userId, userId),
+          eq(s.gatePasses.tripDate, today),
+          eq(s.gatePasses.erpGatepassNo, `GP-${user.erpUserCode}-${today.replace(/-/g, '')}-R2`),
+        ),
+      );
+    if (existingR2) return { available: false };
+
+    const allRoutes = await db.select().from(s.routes).where(eq(s.routes.isActive, true)).limit(5);
     const secondaryRoute = allRoutes[1] ?? allRoutes[0];
     if (!secondaryRoute) return { available: false };
 
