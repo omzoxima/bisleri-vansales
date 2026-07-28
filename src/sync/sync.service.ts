@@ -718,6 +718,37 @@ export class SyncService {
       return transfer.id;
     }
 
+    if (p.direction === 'reject_in') {
+      const [transfer] = await tx
+        .select()
+        .from(s.vanTransfers)
+        .where(
+          p.transferId
+            ? eq(s.vanTransfers.id, p.transferId)
+            : eq(s.vanTransfers.localUuid, p.transferLocalUuid ?? p.localUuid),
+        );
+      if (!transfer) throw new Error('Transfer not found');
+      if (transfer.toUserId !== userId) throw new Error('Not your transfer');
+      if (transfer.status === 'rejected') return transfer.id;
+
+      if (transfer.fromDayTripId) {
+        const lines = await tx
+          .select()
+          .from(s.vanTransferLines)
+          .where(eq(s.vanTransferLines.transferId, transfer.id));
+        for (const line of lines) {
+          await this.adjustReserved(tx, transfer.fromDayTripId, line.itemId, line.batchId, -line.qtyTotalPcs);
+        }
+      }
+
+      await tx
+        .update(s.vanTransfers)
+        .set({ status: 'rejected' })
+        .where(eq(s.vanTransfers.id, transfer.id));
+
+      return transfer.id;
+    }
+
     // accept_in — stock moves ONLY on acceptance (blueprint rule). Covers
     // both a van-to-van transfer and one raised by the office for this van.
     const [transfer] = await tx
