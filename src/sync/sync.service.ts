@@ -324,7 +324,10 @@ export class SyncService {
     }
 
     // Lines + stock movement in the same transaction.
-    const stockDirection = p.orderType === 'empty_jar' ? 0 : p.orderType === 'replacement' ? 0 : -1;
+    const stockDirection =
+      p.orderType === 'empty_jar' || p.orderType === 'replacement' || p.orderType === 'feeder'
+        ? 0
+        : -1;
     for (const line of p.lines) {
       await tx.insert(s.orderLines).values({
         orderId: order.id,

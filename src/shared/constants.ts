@@ -14,7 +14,7 @@ export const DAY_STATES = [
 ] as const;
 export type DayState = (typeof DAY_STATES)[number];
 
-export const ORDER_TYPES = ['sale', 'foc', 'replacement', 'empty_jar'] as const;
+export const ORDER_TYPES = ['sale', 'foc', 'replacement', 'empty_jar', 'feeder'] as const;
 export type OrderType = (typeof ORDER_TYPES)[number];
 
 export const ORDER_STATUSES = [
