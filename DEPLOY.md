@@ -56,3 +56,4 @@ Notes
   enable "Allow public access from any Azure service" so App Service can reach it.
 - One bonus of deploying: the "ETIMEDOUT" worker warnings disappear — App Service
   and the database are inside Azure together.
+  
