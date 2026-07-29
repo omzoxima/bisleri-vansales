@@ -35,7 +35,7 @@ export async function ensureTodayGatePass(
         userId,
         dayTripId: tripId,
         tripDate: today,
-        erpGatepassNo: `GP-${userErpCode}-${today.replace(/-/g, '')}`,
+        erpGatepassNo: `GP-${userErpCode || 'U529'}-${today.replace(/-/g, '')}`,
         status: 'draft',
       })
       .returning();
