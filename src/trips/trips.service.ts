@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { and, desc, eq, like } from 'drizzle-orm';
+import { and, desc, eq, like, not } from 'drizzle-orm';
 import { getDb, schema as s } from '../db/client';
 import { DayStartResponse } from '../shared';
 import { ensureTodayGatePass } from '../domain/demoProvisioning';
@@ -159,18 +159,18 @@ export class TripsService {
         ),
       );
 
-    const r2Passes = await db
+    const extraPasses = await db
       .select({ id: s.gatePasses.id })
       .from(s.gatePasses)
       .where(
         and(
           eq(s.gatePasses.userId, userId),
           eq(s.gatePasses.tripDate, today),
-          like(s.gatePasses.erpGatepassNo, '%-R2'),
+          not(eq(s.gatePasses.passType, 'morning')),
         ),
       );
 
-    for (const gp of r2Passes) {
+    for (const gp of extraPasses) {
       await db.delete(s.gatePassLines).where(eq(s.gatePassLines.gatePassId, gp.id));
       await db.delete(s.gatePasses).where(eq(s.gatePasses.id, gp.id));
     }
