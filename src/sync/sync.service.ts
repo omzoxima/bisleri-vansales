@@ -125,6 +125,8 @@ export class SyncService {
         return this.applyVanTransfer(tx, userId, p);
       case 'check_in_demand':
         return this.applyDemand(tx, userId, p);
+      case 'trip_demand':
+        return this.applyTripDemand(tx, userId, p);
       case 'settlement':
         return this.applySettlement(tx, userId, p);
       case 'customer_onboarding':
@@ -201,6 +203,42 @@ export class SyncService {
         .update(s.dayTrips)
         .set({ state: 'gate_pass_verified' })
         .where(eq(s.dayTrips.id, trip.id));
+      return trip.id;
+    }
+
+    if (p.event === 'intraday_gate_pass_verified') {
+      if (Array.isArray(p.lines) && p.lines.length > 0) {
+        for (const line of p.lines) {
+          const [existing] = await tx
+            .select()
+            .from(s.vanStock)
+            .where(and(eq(s.vanStock.dayTripId, trip.id), eq(s.vanStock.itemId, line.itemId)));
+          if (existing) {
+            await tx
+              .update(s.vanStock)
+              .set({
+                loadedPcs: sql`${s.vanStock.loadedPcs} + ${line.qtyTotalPcs}`,
+                currentPcs: sql`${s.vanStock.currentPcs} + ${line.qtyTotalPcs}`,
+              })
+              .where(eq(s.vanStock.id, existing.id));
+          } else {
+            await tx.insert(s.vanStock).values({
+              dayTripId: trip.id,
+              itemId: line.itemId,
+              loadedPcs: line.qtyTotalPcs,
+              currentPcs: line.qtyTotalPcs,
+            });
+          }
+          await tx.insert(s.stockLedger).values({
+            dayTripId: trip.id,
+            itemId: line.itemId,
+            txnType: 'load',
+            qtyPcs: line.qtyTotalPcs,
+            refTable: 'gate_passes',
+            refId: p.gatePassId ?? trip.id,
+          });
+        }
+      }
       return trip.id;
     }
 
@@ -813,6 +851,32 @@ export class SyncService {
       await tx.update(s.dayTrips).set({ state: 'demand_created' }).where(eq(s.dayTrips.id, trip.id));
     }
     await this.erp.enqueue(tx, 'push_demand', demand.id, { demandId: demand.id });
+    return demand.id;
+  }
+
+  private async applyTripDemand(tx: Tx, userId: string, p: any): Promise<string> {
+    const trip = await this.trip(tx, userId);
+    const [demand] = await tx
+      .insert(s.checkInDemands)
+      .values({
+        localUuid: p.localUuid,
+        dayTripId: trip.id,
+        userId,
+        demandDate: trip.tripDate,
+        status: 'sent_to_warehouse',
+      })
+      .returning();
+    if (Array.isArray(p.lines)) {
+      for (const line of p.lines) {
+        await tx.insert(s.checkInDemandLines).values({
+          demandId: demand.id,
+          itemId: line.itemId,
+          qtyCases: line.qtyCases,
+          qtyPcs: line.qtyPcs,
+        });
+      }
+    }
+    await this.erp.enqueue(tx, 'push_trip_demand', demand.id, { demandId: demand.id, type: p.demandType });
     return demand.id;
   }
 

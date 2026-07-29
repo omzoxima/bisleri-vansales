@@ -305,9 +305,11 @@ export const gatePasses = pgTable('gate_passes', {
   userId: uuid('user_id').references(() => users.id).notNull(),
   tripDate: date('trip_date').notNull(),
   erpGatepassNo: text('erp_gatepass_no').notNull(),
+  passType: text('pass_type').default('morning').notNull(), // morning|intraday_self|intraday_feeder
   status: text('status').notNull().default('pending'), // pending|verified
   verifiedAt: timestamp('verified_at', { withTimezone: true }),
   signatureFileId: uuid('signature_file_id'),
+  receiptImage: text('receipt_image'),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });

@@ -146,12 +146,24 @@ export const demandPushSchema = z.object({
 
 export const dayEventPushSchema = z.object({
   localUuid: uuid,
-  event: z.enum(['gate_pass_verified', 'day_started', 'day_ended']),
+  event: z.enum(['gate_pass_verified', 'intraday_gate_pass_verified', 'day_started', 'day_ended']),
   at: isoDate,
   lat: z.number().nullish(),
   lng: z.number().nullish(),
   gatePassId: uuid.nullish(),
   signatureB64: z.string().nullish(),
+  passType: z.string().nullish(),
+  receiptImage: z.string().nullish(),
+  lines: z.array(z.any()).optional(),
+  aiMetadata: z.any().optional(),
+});
+
+export const tripDemandPushSchema = z.object({
+  localUuid: uuid,
+  demandType: z.enum(['self', 'feeder']),
+  at: isoDate.optional(),
+  gatePassId: uuid.nullish(),
+  lines: z.array(z.object({ itemId: uuid, qtyCases: qty, qtyPcs: qty })),
 });
 
 export const settlementPushSchema = z.object({
@@ -190,6 +202,7 @@ export const PUSH_ENTITIES = {
   jar_collection: jarCollectionPushSchema,
   van_transfer: transferPushSchema,
   check_in_demand: demandPushSchema,
+  trip_demand: tripDemandPushSchema,
   day_event: dayEventPushSchema,
   settlement: settlementPushSchema,
   customer_onboarding: customerOnboardPushSchema,
